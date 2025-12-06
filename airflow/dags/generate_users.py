@@ -1,0 +1,91 @@
+from datetime import datetime, timedelta
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from helpers import get_db_connection, LOG_PATHS
+from faker import Faker
+import random
+import json
+
+fake = Faker()
+
+def generate_users():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    try:
+        cur.execute("SELECT COUNT(*) FROM users")
+        count = cur.fetchone()[0]
+        
+        # Ensure at least 5 users exist
+        users_created = []
+        if count < 5:
+            for _ in range(5 - count):
+                username = fake.unique.first_name()
+                join_date = datetime.now()
+                is_member = random.random() < 0.2
+                cur.execute(
+                    "INSERT INTO users (username, join_date, is_member) VALUES (%s, %s, %s) RETURNING user_id",
+                    (username, join_date, is_member)
+                )
+                user_id = cur.fetchone()[0]
+                users_created.append({
+                    "user_id": user_id,
+                    "username": username,
+                    "join_date": join_date.isoformat(),
+                    "is_member": is_member
+                })
+        
+        # 50% chance to add 1-2 additional users
+        if random.random() < 0.5:
+            for _ in range(random.randint(1, 2)):
+                username = fake.unique.first_name()
+                join_date = datetime.now()
+                cur.execute(
+                    "INSERT INTO users (username, join_date, is_member) VALUES (%s, %s, false) RETURNING user_id",
+                    (username, join_date)
+                )
+                user_id = cur.fetchone()[0]
+                users_created.append({
+                    "user_id": user_id,
+                    "username": username,
+                    "join_date": join_date.isoformat(),
+                    "is_member": False
+                })
+        
+        conn.commit()
+        
+        # Log all created users
+        if users_created:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            with open(f"{LOG_PATHS['users']}/users_{timestamp}.json", "w") as f:
+                for user in users_created:
+                    f.write(json.dumps(user) + "\n")
+                    
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'retries': 2,
+    'retry_delay': timedelta(minutes=1),
+    'start_date': datetime(2024, 1, 1),
+}
+
+with DAG(
+    'generate_users',
+    tags=['article-platform', 'generation'],
+    default_args=default_args,
+    schedule='*/5 * * * *',
+    catchup=False,
+    max_active_runs=1
+) as dag:
+    gen_users = PythonOperator(
+        task_id='generate_users',
+        python_callable=generate_users,
+        execution_timeout=timedelta(minutes=5)
+    )
