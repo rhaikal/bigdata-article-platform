@@ -15,51 +15,60 @@ def generate_users():
     try:
         cur.execute("SELECT COUNT(*) FROM users")
         count = cur.fetchone()[0]
-        
+
+        log_entry = {
+            "timestamp": None,
+            "event_type": "user_created",
+            "users": []
+        }
+
         # Ensure at least 5 users exist
-        users_created = []
         if count < 5:
             for _ in range(5 - count):
+                current_time = datetime.now()
+                current_time_isoformat = current_time.isoformat()
+                
                 username = fake.unique.first_name()
-                join_date = datetime.now()
                 is_member = random.random() < 0.2
                 cur.execute(
                     "INSERT INTO users (username, join_date, is_member) VALUES (%s, %s, %s) RETURNING user_id",
-                    (username, join_date, is_member)
+                    (username, current_time, is_member)
                 )
                 user_id = cur.fetchone()[0]
-                users_created.append({
+                log_entry["users"].append({
                     "user_id": user_id,
                     "username": username,
-                    "join_date": join_date.isoformat(),
+                    "join_date": current_time_isoformat,
                     "is_member": is_member
                 })
         
         # 50% chance to add 1-2 additional users
         if random.random() < 0.5:
             for _ in range(random.randint(1, 2)):
+                current_time = datetime.now()
+                current_time_isoformat = current_time.isoformat()
+                
                 username = fake.unique.first_name()
-                join_date = datetime.now()
                 cur.execute(
                     "INSERT INTO users (username, join_date, is_member) VALUES (%s, %s, false) RETURNING user_id",
-                    (username, join_date)
+                    (username, current_time)
                 )
                 user_id = cur.fetchone()[0]
-                users_created.append({
+                log_entry["users"].append({
                     "user_id": user_id,
                     "username": username,
-                    "join_date": join_date.isoformat(),
+                    "join_date": current_time_isoformat,
                     "is_member": False
                 })
         
         conn.commit()
         
         # Log all created users
-        if users_created:
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            with open(f"{LOG_PATHS['users']}/users_{timestamp}.json", "w") as f:
-                for user in users_created:
-                    f.write(json.dumps(user) + "\n")
+        if len(log_entry["users"]) > 0:
+            current_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_entry["timestamp"] = current_timestamp
+            with open(f"{LOG_PATHS['users']}/users_{current_timestamp}.json", "w") as f:
+                json.dump(log_entry, f)
                     
     except Exception as e:
         conn.rollback()

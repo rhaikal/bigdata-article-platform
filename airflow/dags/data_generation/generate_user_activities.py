@@ -84,7 +84,7 @@ with DAG(
     'generate_user_activities',
     tags=['article-platform', 'generation'],
     default_args=default_args,
-    schedule='* * * * *',  # Every minute
+    schedule='* * * * *',
     catchup=False,
     max_active_runs=1
 ) as dag:

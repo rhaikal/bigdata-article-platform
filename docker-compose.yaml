@@ -17,12 +17,13 @@ x-airflow-common:
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
-    AIRFLOW_CONN_POSTGRES_ARTICLE_PLATFORM: postgresql://${POSTGRES_APP_USER:-hdoop}:${POSTGRES_APP_PASSWORD:-hdoop}@postgres-app:5432/${POSTGRES_APP_DB:-article_platform}
+    AIRFLOW_CONN_POSTGRES_ARTICLE_PLATFORM: postgresql://${POSTGRES_APP_USER:-article_user}:${POSTGRES_APP_PASSWORD:-Art1cl3_PlatfOrm}@postgres-app:5432/${POSTGRES_APP_DB:-article_db}
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/logs:/opt/airflow/logs
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/plugins:/opt/airflow/plugins
+    - airflow-data:/opt/airflow/
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -33,11 +34,14 @@ x-airflow-common:
   networks:
     - bigdata-net
 
-services:
+x-hadoop-common: &hadoop-common
+  image: apache/hadoop:3.4.1
+  env_file:
+    - ./hadoop/cluster/config
+  networks:
+    - bigdata-net
 
-  # --------------------------
-  # Airflow core infra (official template)
-  # --------------------------
+services:
   postgres:
     image: postgres:15
     environment:
@@ -45,7 +49,7 @@ services:
       POSTGRES_PASSWORD: airflow
       POSTGRES_DB: airflow
     volumes:
-      - postgres-db-volume:/var/lib/postgresql/data
+      - postgres-db-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "airflow"]
       interval: 10s
@@ -160,8 +164,18 @@ services:
         if [[ -z "${AIRFLOW_UID}" ]]; then
           export AIRFLOW_UID=$$(id -u)
         fi
-        mkdir -p /opt/airflow/{logs,dags,plugins,config}
-        chown -R "${AIRFLOW_UID}:0" /opt/airflow/
+        
+        mkdir -p /opt/airflow/{logs,dags,plugins,config,data/logs/{users,articles,activity,subscriptions}}
+        mkdir -p /home/airflow/.ssh
+        cat > /home/airflow/.ssh/config << 'EOF'
+        Host hadoop-client
+          StrictHostKeyChecking no
+          UserKnownHostsFile=/dev/null
+        EOF
+
+        chown -R "${AIRFLOW_UID}:0" /opt/airflow/ /home/airflow/.ssh
+        chmod 600 /home/airflow/.ssh/config
+        
         /entrypoint airflow db migrate
         /entrypoint airflow users create \
            --username ${_AIRFLOW_WWW_USER_USERNAME:-airflow} \
@@ -198,30 +212,86 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
-  # --------------------------
-  # Big Data services (user-specified official images)
-  # --------------------------
-
   postgres-app:
     image: postgres:15
-    container_name: postgres-app
     environment:
       POSTGRES_USER: ${POSTGRES_APP_USER:-article_user}
       POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:-Art1cl3_PlatfOrm}
       POSTGRES_DB: ${POSTGRES_APP_DB:-article_db}
     volumes:
       - postgres-app-data:/var/lib/postgresql/data
+      - ./postgres/app/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
     networks:
       - bigdata-net
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "${POSTGRES_APP_USER:-article_user}", "-d", "${POSTGRES_APP_DB:-article_platform}"]
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_APP_USER:-article_user}", "-d", "${POSTGRES_APP_DB:-article_db}"]
       interval: 10s
       retries: 5
       start_period: 5s
+  
+  hadoop-namenode-init:
+    <<: *hadoop-common
+    command: ["/bin/bash", "-c", "if [ ! -d /tmp/hadoop-root/dfs/name/current ]; then hdfs namenode -format -force; fi"]
+    user: "0:0"
+    volumes:
+      - hdfs-name:/tmp/hadoop-root/dfs/name
+
+  hadoop-namenode:
+    <<: *hadoop-common
+    hostname: hadoop-namenode
+    command: ["hdfs", "namenode"]
+    ports:
+      - 9870:9870
+    environment:
+        ENSURE_NAMENODE_DIR: "/tmp/hadoop-root/dfs/name"
+    depends_on:
+      hadoop-namenode-init:
+        condition: service_completed_successfully
+    user: "0:0"
+    volumes:
+      - hdfs-name:/tmp/hadoop-root/dfs/name
+
+  hadoop-datanode:
+    <<: *hadoop-common
+    command: ["hdfs", "datanode"]
+    depends_on:
+      - hadoop-namenode
+    user: "0:0"
+    volumes:
+      - hdfs-data:/tmp/hadoop-root/dfs/data
+
+  hadoop-resourcemanager:
+    <<: *hadoop-common
+    hostname: hadoop-resourcemanager
+    command: ["yarn", "resourcemanager"]
+    ports:
+        - 8088:8088
+    volumes:
+      - ./test.sh:/opt/test.sh
+
+  hadoop-client:
+    build:
+      context: ./hadoop/client
+    hostname: hadoop-client
+    volumes:
+      - ./hadoop/client/hadoop/conf:/opt/hadoop/etc/hadoop:ro
+      - ./hadoop/client/flume/conf:/opt/flume/conf:ro
+    depends_on:
+      - hadoop-namenode
+      - postgres-app
+    networks:
+      - bigdata-net
+    environment:
+      ROOT_PASSWORD: ${SSH_PASSWORD:-hadoop123}
+    ports:
+      - "2223:22"
 
 volumes:
-  postgres-db-volume:
+  postgres-db-data:
   postgres-app-data:
+  hdfs-name:
+  hdfs-data:
+  airflow-data:
 
 networks:
   bigdata-net:

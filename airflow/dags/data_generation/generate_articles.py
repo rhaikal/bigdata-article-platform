@@ -19,8 +19,13 @@ def generate_articles():
             print("No users available, skipping article generation")
             return
         
+        log_entry = {
+            "timestamp": None,
+            "event_type": "articles_generated",
+            "articles": []
+        }
+        
         # Generate 1-3 articles per run
-        articles_created = []
         for _ in range(random.randint(1, 3)):
             cur.execute("SELECT EXISTS(SELECT 1 FROM users WHERE is_member = true)")
             has_premium_users = cur.fetchone()[0]
@@ -52,7 +57,7 @@ def generate_articles():
             )
             article_id = cur.fetchone()[0]
             
-            articles_created.append({
+            log_entry["articles"].append({
                 "timestamp": publish_date.isoformat(),
                 "article_id": article_id,
                 "title": title,
@@ -64,11 +69,11 @@ def generate_articles():
         conn.commit()
         
         # Log created articles
-        if articles_created:
+        if len(log_entry["articles"]) > 0:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            log_entry["timestamp"] = timestamp
             with open(f"{LOG_PATHS['articles']}/articles_{timestamp}.json", "w") as f:
-                for article in articles_created:
-                    f.write(json.dumps(article) + "\n")
+                json.dump(log_entry, f)
                     
     except Exception as e:
         conn.rollback()

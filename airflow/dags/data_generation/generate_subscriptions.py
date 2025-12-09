@@ -42,17 +42,18 @@ def generate_subscriptions():
         candidates = [row[0] for row in cur.fetchall()]
         
         for user_id in candidates:
+            current_time = datetime.now()
             activities = get_user_activity(user_id)
             premium_reads = [
                 a for a in activities 
                 if a.get('content', {}).get('premium') is True
-                and datetime.fromisoformat(a['timestamp']) > datetime.now() - timedelta(hours=24)
+                and datetime.fromisoformat(a['timestamp']) > current_time - timedelta(hours=24)
             ]
             
             non_premium_reads = [
                 a for a in activities
                 if a.get('content', {}).get('premium') is False
-                and datetime.fromisoformat(a['timestamp']) > datetime.now() - timedelta(hours=24)
+                and datetime.fromisoformat(a['timestamp']) > current_time - timedelta(hours=24)
             ]
             
             if len(premium_reads) >= 3 or len(non_premium_reads) >= 8:
@@ -62,7 +63,7 @@ def generate_subscriptions():
                 ]
                     
                 if not existing_subs:
-                    start_date = datetime.now()
+                    start_date = current_time
                     end_date = start_date + timedelta(days=30)
                     
                     try:
