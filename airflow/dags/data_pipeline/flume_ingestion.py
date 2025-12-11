@@ -1,16 +1,9 @@
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.bash import BashOperator
+from airflow.operators.python import BranchPythonOperator
 from airflow.models import Variable
 from helpers import LOG_DIR, HDFS_DATA_DIR, HADOOP_SSH_PREFIX, HADOOP_SCP_PREFIX
-
-default_args = {
-    'owner': 'airflow',
-    'depends_on_past': False,
-    'retries': 1,
-    'retry_delay': timedelta(minutes=5),
-    'start_date': datetime(2023, 1, 1),
-}
 
 def get_end_timestamp():
     try:
@@ -145,14 +138,13 @@ def create_ingest_operator(task_id, log_type, conf_file):
             # Wait for Flume to finish processing
             echo "Waiting for Flume to process all files..."
             
-            MAX_WAIT=1800  # 30 minutes timeout
+            MAX_WAIT=1800
             ELAPSED=0
             CHECK_INTERVAL=10
             STABLE_COUNT=0
-            REQUIRED_STABLE_CHECKS=3  # Need 3 consecutive checks showing completion
+            REQUIRED_STABLE_CHECKS=4
             
             while [ $ELAPSED -lt $MAX_WAIT ]; do
-                # Check both spool directory and HDFS temp files
                 UNCOMPLETED_FILES=$(ls "$REMOTE_INGEST_DIR"/*.json 2>/dev/null | wc -l || echo 0)
                 TMP_FILES=$(hdfs dfs -ls "$REMOTE_HDFS_DIR"/*/*.tmp 2>/dev/null | wc -l || echo 0)
                 
@@ -161,12 +153,16 @@ def create_ingest_operator(task_id, log_type, conf_file):
                     echo "Processing appears complete (check $STABLE_COUNT/$REQUIRED_STABLE_CHECKS)..."
                     
                     if [ "$STABLE_COUNT" -ge "$REQUIRED_STABLE_CHECKS" ]; then
-                        echo "Confirmed: all files processed successfully"
+                        echo "Confirmed: Pipeline is idle and all files are closed."
                         break
                     fi
                 else
+                    if [ "$STABLE_COUNT" -gt 0 ]; then
+                        echo "Activity detected (Spool: $UNCOMPLETED_FILES, HDFS .tmp: $TMP_FILES). Resetting stability check."
+                    else
+                         echo "Still processing... (Spool: $UNCOMPLETED_FILES, HDFS .tmp: $TMP_FILES)"
+                    fi
                     STABLE_COUNT=0
-                    echo "Still processing {log_type} logs... ($UNCOMPLETED_FILES files in spool, $TMP_FILES .tmp files in HDFS)"
                 fi
                 
                 sleep $CHECK_INTERVAL
@@ -249,7 +245,6 @@ def create_ingest_operator(task_id, log_type, conf_file):
             
             echo "Remote ingestion complete. Starting local cleanup/marking..."
             
-            # Replicate the completion marking logic locally
             RAW_TIMESTAMP="{ESCAPED_END_TIMESTAMP}"
 
             if [ -n "$RAW_TIMESTAMP" ]; then
@@ -283,6 +278,13 @@ def create_ingest_operator(task_id, log_type, conf_file):
         execution_timeout=timedelta(minutes=45),
     )
 
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
+    'start_date': datetime(2023, 1, 1),
+}
 
 with DAG(
     'flume_ingestion',
@@ -292,6 +294,16 @@ with DAG(
     max_active_runs=2,
     schedule=None,
 ) as dag:
+    setup_hdfs = BashOperator(
+        task_id='setup_hdfs_structure',
+        bash_command=f"""
+        {HADOOP_SSH_PREFIX} \
+        "hdfs dfs -mkdir -p {HDFS_DATA_DIR}/raw/logs/users && \
+        hdfs dfs -mkdir -p {HDFS_DATA_DIR}/raw/logs/articles && \
+        hdfs dfs -mkdir -p {HDFS_DATA_DIR}/raw/logs/subscriptions && \
+        hdfs dfs -mkdir -p {HDFS_DATA_DIR}/raw/logs/activity"
+        """
+    )
 
     log_types = {
         'activity': 'activity',
@@ -310,12 +322,5 @@ with DAG(
                 f"flume-{log_type}.conf"
             )
         )
-
-    check_hdfs = BashOperator(
-        task_id='check_hdfs_results',
-        bash_command=f'''
-            {HADOOP_SSH_PREFIX} 'hdfs dfs -ls -R /data/raw/logs/'
-        ''',
-    )
-
-    ingest_operators >> check_hdfs
+        
+    setup_hdfs >> ingest_operators

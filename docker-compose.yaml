@@ -1,69 +1,124 @@
 x-airflow-common:
   &airflow-common
   build: ./airflow
-  env_file:
-    - ${ENV_FILE_PATH:-.env}
+  env_file: .env
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
-    AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
-    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@postgres-airflow/${AIRFLOW_DB_NAME}
+    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@postgres-airflow/${AIRFLOW_DB_NAME}
+    AIRFLOW__CELERY__BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:8080/execution/'
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
-    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
-    AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
-    AIRFLOW_CONN_POSTGRES_ARTICLE_PLATFORM: postgresql://${POSTGRES_APP_USER:-article_user}:${POSTGRES_APP_PASSWORD:-Art1cl3_PlatfOrm}@postgres-app:5432/${POSTGRES_APP_DB:-article_db}
+    AIRFLOW_CONFIG: /opt/airflow/config/airflow.cfg
+    AIRFLOW_CONN_POSTGRES_ARTICLE_PLATFORM: postgresql://${POSTGRES_APP_USER}:${POSTGRES_APP_PASSWORD}@postgres-app:5432/${POSTGRES_APP_DB}
   volumes:
-    - ${AIRFLOW_PROJ_DIR:-.}/airflow/dags:/opt/airflow/dags
-    - ${AIRFLOW_PROJ_DIR:-.}/airflow/logs:/opt/airflow/logs
-    - ${AIRFLOW_PROJ_DIR:-.}/airflow/config:/opt/airflow/config
-    - ${AIRFLOW_PROJ_DIR:-.}/airflow/plugins:/opt/airflow/plugins
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/logs:/opt/airflow/logs
+    - ./airflow/config:/opt/airflow/config
+    - ./airflow/plugins:/opt/airflow/plugins
     - airflow-data:/opt/airflow/
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
     redis:
       condition: service_healthy
-    postgres:
+    postgres-airflow:
       condition: service_healthy
   networks:
     - bigdata-net
 
-x-hadoop-common: &hadoop-common
-  image: apache/hadoop:3.4.1
-  env_file:
-    - ./hadoop/cluster/config
+x-hadoop-common:
+  &hadoop-common
+  build: ./hadoop/cluster
+  env_file: ./hadoop/cluster/config
   networks:
     - bigdata-net
 
+x-hive-common:
+  &hive-common
+  build: ./hive
+  environment:
+    &hive-common-env
+    HDFS_DATA_DIR: ${HDFS_DATA_DIR:-/data}
+  volumes:
+    - hive-lib:/opt/hive/lib
+    - ./hadoop/client/hadoop/conf:/opt/hadoop/etc/hadoop:ro
+    - ./hive/conf/hive-site.xml:/opt/hive/conf/hive-site.xml:ro
+    - ./hive/init_db.sh:/opt/hive/init_db.sh
+  networks:
+    - bigdata-net
+
+x-zookeeper-common:
+  &zookeeper-common
+  image: zookeeper
+  restart: always
+  environment:
+    &zookeeper-common-env
+    ZOO_4LW_COMMANDS_WHITELIST: "*"
+    ZOO_STANDALONE_ENABLED: "false"
+    ZOO_ADMINSERVER_ENABLED: "true"
+    ZOO_SERVERS: server.1=zookeeper-1:2888:3888;2181 server.2=zookeeper-2:2888:3888;2181 server.3=zookeeper-3:2888:3888;2181
+  networks:
+    - bigdata-net
+  healthcheck:
+    test: ["CMD-SHELL", "echo ruok | nc localhost 2181 | grep imok"]
+    interval: 10s
+    timeout: 5s
+    retries: 5
+    start_period: 30s
+
+x-hbase-common:
+  &hbase-common
+  image: openeuler/hbase:2.6.3-oe2403sp1
+  environment:
+    HBASE_MANAGES_ZK: 'false'
+    HDFS_DATA_DIR: ${HDFS_DATA_DIR:-/data}
+  volumes:
+    - ./hbase/conf/hbase-site.xml:/usr/local/hbase/conf/hbase-site.xml:ro
+    - ./hbase/init_db.sh:/opt/hbase/init_db.sh:ro
+  networks:
+    - bigdata-net
+
+x-postgres-healthcheck:
+  &postgres-healthcheck
+  interval: 10s
+  retries: 5
+  start_period: 5s
+
+x-service-healthcheck:
+  &service-healthcheck
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 30s
+
 services:
-  postgres:
+  postgres-airflow:
     image: postgres:15
     environment:
-      POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow
-      POSTGRES_DB: airflow
+      POSTGRES_USER: ${AIRFLOW_DB_USER}
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD}
+      POSTGRES_DB: ${AIRFLOW_DB_NAME}
     volumes:
-      - postgres-db-data:/var/lib/postgresql/data
+      - postgres-airflow-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "airflow"]
-      interval: 10s
-      retries: 5
-      start_period: 5s
+      <<: *postgres-healthcheck
+      test: ["CMD", "pg_isready", "-U", "${AIRFLOW_DB_USER}"]
     restart: always
     networks:
       - bigdata-net
 
   redis:
     image: redis:7.2-bookworm
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
     expose: ["6379"]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
       timeout: 30s
       retries: 50
@@ -77,11 +132,8 @@ services:
     command: api-server
     ports: ["8081:8080"]
     healthcheck:
+      <<: *service-healthcheck
       test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
     restart: always
     depends_on:
       <<: *airflow-common-depends-on
@@ -92,11 +144,8 @@ services:
     <<: *airflow-common
     command: scheduler
     healthcheck:
+      <<: *service-healthcheck
       test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
     restart: always
     depends_on:
       <<: *airflow-common-depends-on
@@ -107,11 +156,8 @@ services:
     <<: *airflow-common
     command: dag-processor
     healthcheck:
+      <<: *service-healthcheck
       test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
     restart: always
     depends_on:
       <<: *airflow-common-depends-on
@@ -122,13 +168,8 @@ services:
     <<: *airflow-common
     command: celery worker
     healthcheck:
-      test:
-        - "CMD-SHELL"
-        - 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}" || celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"'
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
+      <<: *service-healthcheck
+      test: ["CMD-SHELL", 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}" || celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"']
     environment:
       <<: *airflow-common-env
       DUMB_INIT_SETSID: "0"
@@ -144,11 +185,8 @@ services:
     <<: *airflow-common
     command: triggerer
     healthcheck:
+      <<: *service-healthcheck
       test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
     restart: always
     depends_on:
       <<: *airflow-common-depends-on
@@ -178,9 +216,12 @@ services:
         
         /entrypoint airflow db migrate
         /entrypoint airflow users create \
-           --username ${_AIRFLOW_WWW_USER_USERNAME:-airflow} \
-           --password ${_AIRFLOW_WWW_USER_PASSWORD:-airflow} \
-           --firstname admin --lastname user --role Admin --email admin@example.com
+           --username ${_AIRFLOW_WWW_USER_USERNAME} \
+           --password ${_AIRFLOW_WWW_USER_PASSWORD} \
+           --firstname ${_AIRFLOW_WWW_USER_FIRSTNAME:-admin} \
+           --lastname ${_AIRFLOW_WWW_USER_LASTNAME:-user} \
+           --role Admin \
+           --email ${_AIRFLOW_WWW_USER_EMAIL:-admin@example.com}
     user: "0:0"
     environment:
       <<: *airflow-common-env
@@ -201,11 +242,8 @@ services:
     profiles: ["flower"]
     ports: ["5555:5555"]
     healthcheck:
+      <<: *service-healthcheck
       test: ["CMD", "curl", "--fail", "http://localhost:5555/"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
     restart: always
     depends_on:
       <<: *airflow-common-depends-on
@@ -215,20 +253,18 @@ services:
   postgres-app:
     image: postgres:15
     environment:
-      POSTGRES_USER: ${POSTGRES_APP_USER:-article_user}
-      POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:-Art1cl3_PlatfOrm}
-      POSTGRES_DB: ${POSTGRES_APP_DB:-article_db}
+      POSTGRES_USER: ${POSTGRES_APP_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_APP_DB}
     volumes:
       - postgres-app-data:/var/lib/postgresql/data
       - ./postgres/app/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
     networks:
       - bigdata-net
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "${POSTGRES_APP_USER:-article_user}", "-d", "${POSTGRES_APP_DB:-article_db}"]
-      interval: 10s
-      retries: 5
-      start_period: 5s
-  
+      <<: *postgres-healthcheck
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_APP_USER}", "-d", "${POSTGRES_APP_DB}"]
+
   hadoop-namenode-init:
     <<: *hadoop-common
     command: ["/bin/bash", "-c", "if [ ! -d /tmp/hadoop-root/dfs/name/current ]; then hdfs namenode -format -force; fi"]
@@ -240,16 +276,21 @@ services:
     <<: *hadoop-common
     hostname: hadoop-namenode
     command: ["hdfs", "namenode"]
-    ports:
-      - 9870:9870
+    ports: ["9870:9870"]
+    user: "0:0"
     environment:
-        ENSURE_NAMENODE_DIR: "/tmp/hadoop-root/dfs/name"
+      ENSURE_NAMENODE_DIR: /tmp/hadoop-root/dfs/name
+    volumes:
+      - hdfs-name:/tmp/hadoop-root/dfs/name
+    healthcheck:
+      test: ["CMD-SHELL", "hdfs dfsadmin -report > /dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
     depends_on:
       hadoop-namenode-init:
         condition: service_completed_successfully
-    user: "0:0"
-    volumes:
-      - hdfs-name:/tmp/hadoop-root/dfs/name
 
   hadoop-datanode:
     <<: *hadoop-common
@@ -259,39 +300,282 @@ services:
     user: "0:0"
     volumes:
       - hdfs-data:/tmp/hadoop-root/dfs/data
+    healthcheck:
+      test: ["CMD-SHELL", "hdfs dfs -test -d / || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
 
   hadoop-resourcemanager:
     <<: *hadoop-common
     hostname: hadoop-resourcemanager
     command: ["yarn", "resourcemanager"]
-    ports:
-        - 8088:8088
+    ports: ["8088:8088"]
     volumes:
       - ./test.sh:/opt/test.sh
 
+  hadoop-nodemanager:
+    <<: *hadoop-common
+    hostname: hadoop-nodemanager
+    command: ["yarn", "nodemanager"]
+    depends_on:
+      - hadoop-resourcemanager
+
   hadoop-client:
-    build:
-      context: ./hadoop/client
+    build: ./hadoop/client
     hostname: hadoop-client
     volumes:
       - ./hadoop/client/hadoop/conf:/opt/hadoop/etc/hadoop:ro
       - ./hadoop/client/flume/conf:/opt/flume/conf:ro
+      - ./hadoop/client/spark/conf:/opt/spark/conf:ro
+      - ./hadoop/client/spark/script:/opt/spark/script
+      - hive-lib:/opt/hive/lib:ro
     depends_on:
       - hadoop-namenode
       - postgres-app
+    environment:
+      ROOT_PASSWORD: ${SSH_PASSWORD}
+    ports: ["2223:22"]
     networks:
       - bigdata-net
+
+  postgres-hive:
+    image: postgres:15
+    hostname: postgres-hive
     environment:
-      ROOT_PASSWORD: ${SSH_PASSWORD:-hadoop123}
+      POSTGRES_DB: ${HIVE_METASTORE_DB}
+      POSTGRES_USER: ${HIVE_METASTORE_USER}
+      POSTGRES_PASSWORD: ${HIVE_METASTORE_PASSWORD}
+    volumes:
+      - postgres-hive-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${HIVE_METASTORE_USER}", "-d", "${HIVE_METASTORE_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - bigdata-net
+
+  hive-setup:
+    <<: *hadoop-common
+    environment:
+      <<: *hive-common-env
+    command: >
+      bash -c "
+      while hdfs dfsadmin -safemode get | grep 'Safe mode is ON'; do 
+        echo 'HDFS NameNode is in Safe Mode. Waiting...'; 
+        sleep 5; 
+      done &&
+
+      hdfs dfs -mkdir -p /user/hive &&
+      hdfs dfs -chown -R hive:hive /user/hive &&
+      hdfs dfs -chmod 1777 /user/hive &&
+
+      hdfs dfs -mkdir -p ${HDFS_DATA_DIR}/warehouse &&
+      hdfs dfs -chown -R hive:hive ${HDFS_DATA_DIR}/warehouse &&
+      hdfs dfs -chmod 1777 ${HDFS_DATA_DIR}/warehouse &&
+
+      hdfs dfs -mkdir -p /tmp &&
+      hdfs dfs -chmod 777 /tmp
+      "
+    user: "0:0"
+    depends_on:
+      hadoop-namenode:
+        condition: service_healthy
+      hadoop-datanode:
+        condition: service_healthy
+
+  hive-metastore:
+    <<: *hive-common
+    hostname: hive-metastore
+    environment:
+      <<: *hive-common-env
+      SERVICE_NAME: metastore
+      DB_DRIVER: postgres
+      SERVICE_OPTS: -Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://postgres-hive:5432/${HIVE_METASTORE_DB} -Djavax.jdo.option.ConnectionUserName=${HIVE_METASTORE_USER} -Djavax.jdo.option.ConnectionPassword=${HIVE_METASTORE_PASSWORD}
+    ports: ["9083:9083"]
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/localhost/9083' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    depends_on:
+      postgres-hive:
+        condition: service_healthy
+      hive-setup:
+        condition: service_completed_successfully
+
+  hive-server:
+    <<: *hive-common
+    hostname: hive-server
+    environment:
+      <<: *hive-common-env
+      SERVICE_NAME: hiveserver2
+      IS_RESUME: true
+      SERVICE_OPTS: -Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://postgres-hive:5432/${HIVE_METASTORE_DB} -Djavax.jdo.option.ConnectionUserName=${HIVE_METASTORE_USER} -Djavax.jdo.option.ConnectionPassword=${HIVE_METASTORE_PASSWORD} -Dhive.metastore.uris=thrift://hive-metastore:9083
     ports:
-      - "2223:22"
+      - "10000:10000"
+      - "10002:10002"
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/localhost/10000' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    depends_on:
+      hive-metastore:
+        condition: service_healthy
+      hadoop-nodemanager:
+        condition: service_started
+
+  hive-init:
+    <<: *hive-common
+    environment:
+      <<: *hive-common-env
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        chmod +x /opt/hive/init_db.sh
+        /opt/hive/init_db.sh
+    depends_on:
+      hive-server:
+        condition: service_healthy
+    restart: "no"
+
+  zookeeper-1:
+    <<: *zookeeper-common
+    hostname: zookeeper-1
+    ports:
+      - "2181:2181"
+      - "2888:2888"
+      - "3888:3888"
+    environment:
+      <<: *zookeeper-common-env
+      ZOO_MY_ID: 1
+    volumes:
+      - zookeeper-data-1:/data
+
+  zookeeper-2:
+    <<: *zookeeper-common
+    hostname: zookeeper-2
+    ports:
+      - "2182:2181"
+      - "2889:2888"
+      - "3889:3888"
+    environment:
+      <<: *zookeeper-common-env
+      ZOO_MY_ID: 2
+    volumes:
+      - zookeeper-data-2:/data
+
+  zookeeper-3:
+    <<: *zookeeper-common
+    hostname: zookeeper-3
+    ports:
+      - "2183:2181"
+      - "2890:2888"
+      - "3890:3888"
+    environment:
+      <<: *zookeeper-common-env
+      ZOO_MY_ID: 3
+    volumes:
+      - zookeeper-data-3:/data
+
+  hbase-master:
+    <<: *hbase-common
+    hostname: hbase-master
+    ports:
+      - "16000:16000"
+      - "16010:16010"
+    entrypoint: ["/bin/bash", "-c"]
+    command: ["exec hbase master start"]
+    depends_on:
+      zookeeper-1:
+        condition: service_healthy
+      zookeeper-2:
+        condition: service_healthy
+      zookeeper-3:
+        condition: service_healthy
+      hadoop-namenode:
+        condition: service_healthy
+      hadoop-datanode:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:16010/master-status || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 180s
+    restart: unless-stopped
+
+  hbase-regionserver:
+    <<: *hbase-common
+    hostname: hbase-regionserver
+    ports:
+      - "16020:16020"
+      - "16030:16030"
+    entrypoint: ["/bin/bash", "-c"]
+    command: ["exec hbase regionserver start"]
+    depends_on:
+      hbase-master:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:16030/rs-status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+
+  hbase-thrift:
+    <<: *hbase-common
+    hostname: hbase-thrift
+    ports:
+      - "9091:9091"
+      - "9095:9095"
+    entrypoint: ["/bin/bash", "-c"]
+    command: ["exec hbase thrift start -p 9091 --infoport 9095"]
+    depends_on:
+      hbase-master:
+        condition: service_healthy
+      hbase-regionserver:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9095/thrift.jsp || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  hbase-init:
+    <<: *hbase-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        chmod +x /opt/hbase/init_db.sh
+        /opt/hbase/init_db.sh
+    depends_on:
+      hbase-master:
+        condition: service_healthy
+    restart: "no"
 
 volumes:
-  postgres-db-data:
   postgres-app-data:
+  postgres-airflow-data:
+  postgres-hive-data:
   hdfs-name:
   hdfs-data:
   airflow-data:
+  zookeeper-data-1:
+  zookeeper-data-2:
+  zookeeper-data-3:
+  hive-lib:
 
 networks:
   bigdata-net:

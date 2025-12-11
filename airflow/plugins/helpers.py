@@ -20,7 +20,7 @@ HADOOP_SSH_PREFIX = (
     f"sshpass -p '{HADOOP_SSH_PASSWORD}' ssh "
     "-o StrictHostKeyChecking=no "
     "-o UserKnownHostsFile=/dev/null "
-    "root@hadoop-client"
+    "root@hadoop-client "
 )
 HADOOP_SCP_PREFIX = (
     f"sshpass -p '{HADOOP_SSH_PASSWORD}' scp "

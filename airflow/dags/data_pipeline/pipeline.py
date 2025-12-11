@@ -22,15 +22,15 @@ def set_end_timestamp(**kwargs):
     print(f"Set ingestion_end_timestamp to DAG run date: {end_timestamp}")
 
 with DAG(
-    'combined_ingestion',
-    tags=['article-platform', 'ingestion'],
+    'pipeline',
+    tags=['article-platform', 'pipeline'],
     schedule='*/30 * * * *',
     catchup=False,
     default_args=default_args,
     max_active_runs=1,
 ) as dag:
     
-    start = EmptyOperator(task_id='start_ingestion')
+    start = EmptyOperator(task_id='start_pipeline')
     
     # Set end timestamp from DAG parameters
     set_timestamp = PythonOperator(
@@ -38,7 +38,7 @@ with DAG(
         python_callable=set_end_timestamp,
     )
     
-    # Trigger sqoop_ingestion DAG
+    # Trigger sqoop_ingestion DAG (Extract SQL)
     trigger_sqoop = TriggerDagRunOperator(
         task_id='trigger_sqoop_ingestion',
         trigger_dag_id='sqoop_ingestion',
@@ -49,7 +49,7 @@ with DAG(
         execution_timeout=timedelta(hours=2),
     )
     
-    # Trigger flume_ingestion DAG
+    # Trigger flume_ingestion DAG (Extract Log)
     trigger_flume = TriggerDagRunOperator(
         task_id='trigger_flume_ingestion',
         trigger_dag_id='flume_ingestion',
@@ -60,7 +60,18 @@ with DAG(
         execution_timeout=timedelta(hours=2),
     )
     
-    end = EmptyOperator(task_id='end_ingestion')
+    # Trigger spark_curation DAG (Transform & Load Ingested Data)
+    trigger_spark = TriggerDagRunOperator(
+        task_id='trigger_spark_curation',
+        trigger_dag_id='spark_curation',
+        wait_for_completion=True,
+        poke_interval=30,
+        reset_dag_run=True,
+        deferrable=False,
+        execution_timeout=timedelta(hours=2),
+    )
+    
+    end = EmptyOperator(task_id='end_pipeline')
     
     # Set up the workflow
-    start >> set_timestamp >> trigger_sqoop >> trigger_flume >> end
+    start >> set_timestamp >> [trigger_sqoop, trigger_flume] >> trigger_spark >> end
