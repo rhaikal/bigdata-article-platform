@@ -112,8 +112,8 @@ A big data platform for replication of article management and analytics service,
       - `flume_ingestion`
       - `spark_curation`
    - Enable the main `pipeline` DAG to automatically orchestrates the complete workflow
-      - **Sqoop ingestion** — Transf*ers relational data from PostgreSQL (OLTP) to HDFS.
-      - **Flume ingestion** — Streams log data into HDFS in near real-time.
+      - **Sqoop ingestion** — Performs incremental batch imports of relational data from PostgreSQL (OLTP) to HDFS.
+      - **Flume ingestion** — Ingests batch log data into HDFS.
       - **Spark curation** — Transforms and loads ingested data from HDFS into Hive (OLAP) and HBase (Real-Time Analytics)
 
 ### Querying Data
