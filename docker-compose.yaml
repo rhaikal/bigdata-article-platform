@@ -312,8 +312,6 @@ services:
     hostname: hadoop-resourcemanager
     command: ["yarn", "resourcemanager"]
     ports: ["8088:8088"]
-    volumes:
-      - ./test.sh:/opt/test.sh
 
   hadoop-nodemanager:
     <<: *hadoop-common
